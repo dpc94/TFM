@@ -1,0 +1,383 @@
+###final use me
+
+#https://mastering-shiny.org/basic-app.html
+# https://www.rstudio.com/resources/cheatsheets/ 
+
+library(shiny)
+library(shinydashboard)
+library(tidyverse)
+library(twitteR)
+library(rtweet)
+library(tidyquant)
+library(tidytext)
+library(tidyverse)
+library(tm)
+library(wordcloud)
+library(graphics)
+library(topicmodels)
+library(syuzhet)
+library(crypto2)
+library(anytime)
+library(lubridate)
+library(shiny)
+library(shinydashboard)
+library(stringr)
+library(reactable)
+library(shinycssloaders)
+library(reshape2)
+library(reactlog)
+library(plotly)
+
+reactlog_enable()
+
+
+######## Connecting to Twitter ######## 
+  API_key <- 'zDCpearHIo5rtEHnKxDLDWBkJ'
+  API_secret_key <- 'C62BVaY6RBvvkDveLkczlxbDtt7F6NNAOW7RBAR7b5qaXYF28g'
+  bearer_token <- 'AAAAAAAAAAAAAAAAAAAAAHHGPwEAAAAAskFHpYmK7osZh7TWv85ni1gpAIM%3DAB2piKs2IEnFk6csfqVb61qCgFhG77fQzC8OzZiGlCVfE150K4'
+  vignette("auth", package = "rtweet")
+  
+  appname <- 'tfm_market_sentiment'
+  key <- 'zDCpearHIo5rtEHnKxDLDWBkJ'
+  secret <- 'C62BVaY6RBvvkDveLkczlxbDtt7F6NNAOW7RBAR7b5qaXYF28g'
+  access_token <- '784158945652932612-zxV42yTweiPmIjFzxbMqnmmpsOgQ4GU'
+  access_secret <- 'NUzCSVw9pk5Gk55iz7QVFTUyIDLgBWESjFvju8d91307Z'
+  
+  twitter_token <- create_token(
+    app = appname,
+    consumer_key = key,
+    consumer_secret = secret,
+    access_token = access_token,
+    access_secret = access_secret)
+  
+  get_token()
+
+  ######## UI ######## 
+ui <- fluidPage(
+  
+  # Application title
+  titlePanel("Analisis sentimiento Twitter vs Precio Criptomonedas"),
+  
+  # Sidebar 
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("num_tweets_to_download", "Numero de tweets a descargar",
+                  min = 2000, max = 9000, value = 2000
+      ),
+      
+      
+      radioButtons("hashtag_to_search", "Criptomoneda:",
+                  c("Bitcoin (BTC)" = "BTC",
+                    "Ethereum (ETH)" = "ETH",
+                    "Dogecoin (DOGE)" = "DOGE",
+                    "Solana (SOL)" = "SOL",
+                    "Binancecoin (BNB)" = "BNB")),
+      
+      sliderInput("last_days", "Ultimos dias con datos:",
+                  min = 3, max = 7, value = 7
+      ),
+      submitButton("Actualizar", icon("refresh")),
+      conditionalPanel(condition="$('html').hasClass('shiny-busy')",
+                       tags$div("Cargando... esperar hasta 1 minuto",id="loadmessage"))
+    ),
+    
+    # Show results
+    mainPanel(
+      tabsetPanel(
+
+
+        
+        #tabPanel("Financial Data", reactableOutput("financial_df") %>%  withSpinner()),
+      
+        #tabPanel("LDA model term freq", plotOutput("lda_model_term_freq_plot")),
+        
+        
+        tabPanel("Instrucciones",
+                 h1("Instrucciones"), 
+                 h4("Paso 1: Elegir qué criptomenda a analizar"),
+                 p("Se elige en el panel de la izquierda, la aplicacion buscará los tweets que contengan el hashtag asociado a la moneda"),
+                 h4("Paso 2: Elegir qué rango temporal"),
+                 p("Twitter solo devuelve los datos de los ultimos 7 dias, de forma aleatoria"),
+                 h4("Paso 3: Elegir qué numero de tweets a descargar"),
+                 p("Twitter solo devuelve como maximo 9,000 tweets cada 15 minutos en su version de prueba"),
+                 h4("Nota: tiempos de carga"),
+                 p("Cada vez que se actualiza cualquier de los valores del panel de la izquierda toda la aplicación necesita actualizarse.")),
+        
+                   
+        
+        tabPanel("Tweets Score sentiment", reactableOutput("twitter_scores_sentiment")  %>%  withSpinner()),
+        tabPanel("Sentimiento vs Cambio de precio", plotlyOutput("sentiment_vs_dailychange") %>%  withSpinner()),
+        tabPanel("Anexo", 
+                 tabsetPanel(
+                             tabPanel("Tweets limpios", reactableOutput("tweet_table") %>%  withSpinner()),
+                             
+                             tabPanel("Precio criptomoneda", plotlyOutput("financial_plot") %>%  withSpinner())
+                             ))
+        
+      )
+    )))
+    
+
+
+#### Server ####
+  
+server <- function(input, output) {
+
+  ### tweets_df (scrapping) ####  
+    tweets_df <- reactive ({
+        search_tweets(paste(input$hashtag_to_search,"filter:verified"), n = input$num_tweets_to_download ,lang= 'en', include_rts = FALSE)
+  })
+  
+    
+    ### financial_raw (scrapping) ####     
+    financial_raw <- reactive ({
+      BTC_daily_prices <- crypto_history(
+        coin_list = crypto_list() %>% filter(symbol == input$hashtag_to_search),
+        convert = "USD",
+        start_date = str_replace_all(Sys.Date()  - input$last_days, "-", "") ,
+        interval = "daily",
+        finalWait = TRUE,
+        limit =1
+      )  %>% select(time_open, close) %>% 
+        mutate(daily_change = (close - lag(close)) / close) %>% 
+        mutate( Date = time_open) %>% 
+        mutate( Date = as.Date(Date)) %>% 
+        select(Date, close, daily_change)
+              
+    })
+    
+
+
+    ### tweets_raw_clean_reactable #### 
+    output$tweet_table <- renderReactable({
+    reactable::reactable(tweets_df()
+                           %>%  #cleaning the tweets text
+                             mutate(created_at = as.Date(created_at)) %>% 
+                             mutate(text = gsub("https+","", text)) %>% 
+                             mutate(text = gsub("&amp","", text)) %>% 
+                             mutate(text = gsub("http+","", text)) %>% 
+                             mutate(text = gsub("tco+","", text)) %>%
+                             mutate(text = gsub("[[:digit:]]+\\s","", text)) %>% 
+                             mutate(text = gsub("[[:punct:]]","", text)) %>% 
+                             mutate(text = gsub("@\\w+","", text)) %>% 
+                             mutate(text = gsub("^RT","", text)) %>% 
+                             mutate(text = gsub("(RT)((?:\\b\\w*@\\w+)+)","", text)) %>% 
+                             mutate(text = gsub("http+","", text)) %>% 
+                             mutate(text = gsub("[ \t]{2,}"," ", text)) %>% 
+                             mutate(text = iconv(text, "UTF-8", "ASCII", sub="")) %>%  #remove non-asci characters
+                             mutate(text = gsub("crypto"," ", text)) %>% 
+                             filter(nchar(text)>25) %>% 
+                             mutate(text = tolower(text)) %>% 
+                             dplyr::select( created_at, text))
+    
+    })
+
+    ### financial_raw_table ####   
+      output$financial_df <- renderReactable({
+        reactable::reactable(financial_raw())
+    })    
+      
+  ### Financial plot ####
+      output$financial_plot <- renderPlotly({
+        a <- financial_raw()
+        b <- ggplot(data = a , aes(x=as.character(Date), y=close)) + geom_line() + geom_point()
+        ggplotly(b)
+    })
+      
+  
+ 
+      
+  #Tweets Score sentiment     
+  output$twitter_scores_sentiment <- renderReactable({
+    clean_data <- tweets_df()
+    clean_data$doc_id <- seq.int(nrow(clean_data))
+    ##### Document Term Matrix #####
+    
+    tweetscorpus.df <- clean_data %>% select(doc_id, text)
+    
+    tweetscorpus <- VCorpus(DataframeSource(tweetscorpus.df))
+    
+    tweetscorpus <- tm_map(tweetscorpus, removePunctuation)
+    
+    tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("en"))
+    tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("SMART"))
+    
+    tweetscorpus <- tm_map(tweetscorpus, removeNumbers)
+    
+    tweetscorpus <- tm_map(tweetscorpus, stripWhitespace)
+    
+    tweetscorpus <- tm_map(tweetscorpus, stemDocument)
+    
+    tweetsdtm <- DocumentTermMatrix(tweetscorpus)
+    
+    tweetsdtm <- removeSparseTerms(tweetsdtm, 0.98)
+    
+    rowTotals <- apply(tweetsdtm , 1, sum)
+    tweetsdtm.new   <- tweetsdtm[rowTotals> 0, ]
+    
+    tweetsdtm.matrix <- as.matrix(tweetsdtm.new)
+    
+    findAssocs(tweetsdtm.new, "crash", 0.05)
+    
+    tweetsLDA <- LDA(tweetsdtm.matrix, 10, method="Gibbs", control = list(seed = 123))
+    terms(tweetsLDA, 10)
+    
+    
+    tweetsLDA.topicword.prob <- tidy(tweetsLDA, matrix="beta")
+    head(tweetsLDA.topicword.prob)
+    
+    
+    tweetsLDA.topterms <- tweetsLDA.topicword.prob %>%
+      group_by(topic) %>%
+      top_n(10, beta) %>%
+      ungroup() %>%
+      arrange(topic, -beta)
+    
+    head(tweetsLDA.topterms)
+    
+    tweetsLDA.class <- data.frame(topics(tweetsLDA))
+    tweetsLDA.class <- cbind(tweetsLDA.class, 1:nrow(tweetsLDA.class))
+    colnames(tweetsLDA.class)[ncol(tweetsLDA.class)] <-'doc_id'
+    tweetsLDA.class <- tweetsLDA.class %>% filter(topics.tweetsLDA.==4)
+    tweets.final <- inner_join(tweetsLDA.class, clean_data)
+    
+    head(tweets.final)
+    
+    
+    tweets.df <- as.vector(tweets.final$text)
+    
+    tweets.emotion <- get_nrc_sentiment(tweets.df)
+    
+    tweets.emotion <- cbind(tweets.final, tweets.emotion) 
+    head(tweets.emotion)
+    tweets.emotion <- tweets.emotion %>%
+      rename(date = created_at) %>% select(date, text, anger, anticipation, disgust, fear, joy, sadness, surprise, trust, negative, positive)
+    
+    tweets.score <- get_sentiment(tweets.df)
+    tweets.score <- cbind(tweets.final,tweets.score ) %>%  rename(Date = created_at) %>%  select(Date, text, tweets.score)
+    reactable(tweets.score)
+    
+  }) 
+  
+  twitter_scores_sentiment_1 <- reactive({
+    clean_data <- tweets_df()
+    clean_data$doc_id <- seq.int(nrow(clean_data))
+    ##### Document Term Matrix #####
+    
+    tweetscorpus.df <- clean_data %>% select(doc_id, text)
+    
+    tweetscorpus <- VCorpus(DataframeSource(tweetscorpus.df))
+    
+    tweetscorpus <- tm_map(tweetscorpus, removePunctuation)
+    
+    tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("en"))
+    tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("SMART"))
+    
+    tweetscorpus <- tm_map(tweetscorpus, removeNumbers)
+    
+    tweetscorpus <- tm_map(tweetscorpus, stripWhitespace)
+    
+    tweetscorpus <- tm_map(tweetscorpus, stemDocument)
+    
+    tweetsdtm <- DocumentTermMatrix(tweetscorpus)
+    
+    tweetsdtm <- removeSparseTerms(tweetsdtm, 0.98)
+    
+    rowTotals <- apply(tweetsdtm , 1, sum)
+    tweetsdtm.new   <- tweetsdtm[rowTotals> 0, ]
+    
+    tweetsdtm.matrix <- as.matrix(tweetsdtm.new)
+    
+    findAssocs(tweetsdtm.new, "crash", 0.05)
+    
+    tweetsLDA <- LDA(tweetsdtm.matrix, 10, method="Gibbs", control = list(seed = 123))
+    terms(tweetsLDA, 10)
+    
+    
+    tweetsLDA.topicword.prob <- tidy(tweetsLDA, matrix="beta")
+    head(tweetsLDA.topicword.prob)
+    
+    
+    tweetsLDA.topterms <- tweetsLDA.topicword.prob %>%
+      group_by(topic) %>%
+      top_n(10, beta) %>%
+      ungroup() %>%
+      arrange(topic, -beta)
+    
+    
+    tweetsLDA.class <- data.frame(topics(tweetsLDA))
+    tweetsLDA.class <- cbind(tweetsLDA.class, 1:nrow(tweetsLDA.class))
+    colnames(tweetsLDA.class)[ncol(tweetsLDA.class)] <-'doc_id'
+    tweetsLDA.class <- tweetsLDA.class %>% filter(topics.tweetsLDA.==4)
+    #head(tweetsLDA.class)
+    tweets.final <- inner_join(tweetsLDA.class, clean_data)
+    
+    
+    
+    tweets.df <- as.vector(tweets.final$text)
+    
+    tweets.emotion <- get_nrc_sentiment(tweets.df)
+    
+    tweets.emotion <- cbind(tweets.final, tweets.emotion) 
+    head(tweets.emotion)
+    tweets.emotion <- tweets.emotion %>%
+      rename(date = created_at) %>% select(date, text, anger, anticipation, disgust, fear, joy, sadness, surprise, trust, negative, positive)
+    
+    tweets.score <- get_sentiment(tweets.df)
+    tweets.score <- cbind(tweets.final,tweets.score ) %>%  rename(Date = created_at)  %>% mutate( Date = as.Date(Date)) %>%  select(Date, tweets.score)
+    
+  })
+  
+  
+  #Sentiment scores vs Financial prices
+  output$sentiment_vs_dailychange_1 <- renderReactable({
+    
+    
+    individual_twitter_scores_sentiment <- twitter_scores_sentiment_1()
+    individual_twitter_scores_sentiment.sum <- twitter_scores_sentiment_1() %>% 
+      group_by(Date) %>%
+     summarise(scores=sum(tweets.score))
+    
+     individual_twitter_scores_sentiment$Date <- anydate(individual_twitter_scores_sentiment$Date)
+    
+    financial_raw <- financial_raw()
+    
+    stocks.df.new <-  financial_raw %>% select(Date, daily_change)
+    stocks.scores <- merge(stocks.df.new,individual_twitter_scores_sentiment.sum, by='Date')
+    
+    #ggplot(data = stocks.scores, aes(x = Date, y = daily_change)) +  geom_line() + geom_point()
+
+  })
+  
+  output$sentiment_vs_dailychange_table <- renderReactable({
+    
+      
+      a <- twitter_scores_sentiment_1() %>% 
+      group_by(Date) %>%
+      summarise(scores=sum(tweets.score))
+      b <- financial_raw() %>%select(Date, daily_change)
+      c <- merge(a,b, by='Date')
+    
+  }) 
+  
+  
+  output$sentiment_vs_dailychange <- renderPlotly({
+    
+    
+    a <- twitter_scores_sentiment_1() %>% 
+      group_by(Date) %>%
+      summarise(scores=sum(tweets.score))
+    b <- financial_raw() %>%select(Date, daily_change)
+    c <- merge(a,b, by='Date')
+    
+    d <- ggplot(c, aes(Date)) + ggtitle("Sentimiento de mercado vs variacion precio") + ylab("") +  geom_line(aes(y=daily_change*100, group=1, colour="Variacion precio")) + geom_line(aes(y=scores, group=2, colour="Sentimiento de mercado")) + theme(plot.title = element_text(hjust=0.5), axis.title.x=element_blank(), axis.text.x=element_text(angle=90,hjust=1), legend.position=c(0.5,0.9),legend.title=element_blank())
+    
+    ggplotly(d)
+  }) 
+      
+    }
+
+  
+
+# Run the application 
+shinyApp(ui = ui, server = server)
