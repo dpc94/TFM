@@ -1,0 +1,308 @@
+######## Preparing the environment ########
+install.packages('rtweet')
+install.packages("twitteR")
+install.packages("tidyverse")
+install.packages("tidyquant")
+install.packages('topicmodels')
+install.packages('crypto2')
+install.packages('anytime')
+install.packages('shinydashboard')
+install.packages("remotes")
+install.packages("shinycssloaders")
+
+install.packages("plotly")
+library(plotly)
+
+library(tidyverse)
+library(twitteR)
+library(rtweet)
+library(tidyquant)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(graphics)
+library(topicmodels)
+library(syuzhet)
+library(crypto2)
+library(anytime)
+library(lubridate)
+library(shiny)
+library(shinydashboard)
+library(stringr)
+library(remotes)
+library(shinycssloaders)
+
+
+######## Connecting to Twitter ########
+API_key <- 'zDCpearHIo5rtEHnKxDLDWBkJ'
+API_secret_key <- 'C62BVaY6RBvvkDveLkczlxbDtt7F6NNAOW7RBAR7b5qaXYF28g'
+bearer_token <- 'AAAAAAAAAAAAAAAAAAAAAHHGPwEAAAAAskFHpYmK7osZh7TWv85ni1gpAIM%3DAB2piKs2IEnFk6csfqVb61qCgFhG77fQzC8OzZiGlCVfE150K4'
+vignette("auth", package = "rtweet")
+
+
+appname <- 'tfm_market_sentiment'
+key <- 'zDCpearHIo5rtEHnKxDLDWBkJ'
+secret <- 'C62BVaY6RBvvkDveLkczlxbDtt7F6NNAOW7RBAR7b5qaXYF28g'
+access_token <- '784158945652932612-zxV42yTweiPmIjFzxbMqnmmpsOgQ4GU'
+access_secret <- 'NUzCSVw9pk5Gk55iz7QVFTUyIDLgBWESjFvju8d91307Z'
+
+
+
+twitter_token <- create_token(
+  app = appname,
+  consumer_key = key,
+  consumer_secret = secret,
+  access_token = access_token,
+  access_secret = access_secret)
+
+get_token()
+
+######## Extracting and cleaning Twitter data ########
+
+
+raw <- search_tweets(q = "bitcoin filter:verified", n = 5000,lang= 'en', include_rts = FALSE)
+head(raw)
+
+my_df <- as.data.frame(raw)
+head(my_df)
+
+
+
+clean_data <- raw %>%  
+  mutate(created_at = as.Date(created_at)) %>% 
+  mutate(text = gsub("https+","", text)) %>% 
+  mutate(text = gsub("&amp","", text)) %>% 
+  mutate(text = gsub("http+","", text)) %>% 
+  mutate(text = gsub("tco+","", text)) %>%
+  mutate(text = gsub("[[:digit:]]+\\s","", text)) %>% 
+  mutate(text = gsub("[[:punct:]]","", text)) %>% 
+  mutate(text = gsub("@\\w+","", text)) %>% 
+  mutate(text = gsub("^RT","", text)) %>% 
+  mutate(text = gsub("(RT)((?:\\b\\w*@\\w+)+)","", text)) %>% 
+  mutate(text = gsub("http+","", text)) %>% 
+  mutate(text = gsub("[ \t]{2,}"," ", text)) %>% 
+  mutate(text = iconv(text, "UTF-8", "ASCII", sub="")) %>%  #remove non-asci characters
+  filter(nchar(text)>25) %>% 
+  mutate(text = tolower(text)) %>% 
+  dplyr::select( created_at, text)
+
+# Remove all non-ASCII characters 
+clean_data$text <- iconv(clean_data$text, "UTF-8", "ASCII", sub="")
+
+# Delete empty text column.
+clean_data <- clean_data %>% na_if("") %>% na_if(" ") %>% na.omit()
+
+# Tweets that contained less than 20 characters were treated as noise.
+clean_data <- clean_data %>% filter(nchar(text)>20)
+
+# Add id column to consider each text row as a document.
+clean_data$doc_id <- seq.int(nrow(clean_data))
+  
+    
+head(clean_data)
+
+######## Market sentiment model ########
+
+##### Tokenizing text and measuring frequency #####
+
+clean_data %>% 
+  unnest_tokens(word, text)%>%
+  anti_join(stop_words) %>%
+  count(word, sort=TRUE) 
+
+
+#removing useless terms such as "biin"
+clean_data <- clean_data %>% mutate(text=tolower(text))
+clean_data$text <- gsub("biin?","", clean_data$text)
+  
+##clean_data$text <- gsub("bitcoin?","", clean_data$text)
+
+top_terms <- clean_data %>% 
+  unnest_tokens(word, text)%>%
+  anti_join(stop_words) %>%
+  count(word, sort=TRUE)
+
+head(top_terms)
+
+
+##### Document Term Matrix #####
+
+tweetscorpus.df <- clean_data %>% select(doc_id, text)
+
+tweetscorpus <- VCorpus(DataframeSource(tweetscorpus.df))
+
+tweetscorpus <- tm_map(tweetscorpus, removePunctuation)
+
+tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("en"))
+tweetscorpus <- tm_map(tweetscorpus, removeWords, stopwords("SMART"))
+
+tweetscorpus <- tm_map(tweetscorpus, removeNumbers)
+
+tweetscorpus <- tm_map(tweetscorpus, stripWhitespace)
+
+tweetscorpus <- tm_map(tweetscorpus, stemDocument)
+
+tweetsdtm <- DocumentTermMatrix(tweetscorpus)
+
+tweetsdtm <- removeSparseTerms(tweetsdtm, 0.98)
+
+rowTotals <- apply(tweetsdtm , 1, sum)
+tweetsdtm.new   <- tweetsdtm[rowTotals> 0, ]
+
+tweetsdtm.matrix <- as.matrix(tweetsdtm.new)
+
+head(tweetsdtm.matrix, n=5)
+
+
+
+##### Data Exploration #####
+
+wordcloud(tweetscorpus, max.words = 200, random.order = FALSE, rot.per = 0.15, min.freq = 50, colors = brewer.pal(8, "Dark2"), stopwords("english"))
+
+findAssocs(tweetsdtm.new, "crash", 0.05)
+
+
+##### LDA model #####
+
+tweetsLDA <- LDA(tweetsdtm.matrix, 10, method="Gibbs", control = list(seed = 123))
+terms(tweetsLDA, 10)
+
+
+tweetsLDA.topicword.prob <- tidy(tweetsLDA, matrix="beta")
+head(tweetsLDA.topicword.prob)
+
+
+tweetsLDA.topterms <- tweetsLDA.topicword.prob %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+head(tweetsLDA.topterms)
+
+tweetsLDA.topterms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  filter(topic==1) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  scale_x_reordered()
+
+
+##### Sentiment analysis #####
+
+tweetsLDA.class <- data.frame(topics(tweetsLDA))
+tweetsLDA.class <- cbind(tweetsLDA.class, 1:nrow(tweetsLDA.class))
+colnames(tweetsLDA.class)[ncol(tweetsLDA.class)] <-'doc_id'
+tweetsLDA.class <- tweetsLDA.class %>% filter(topics.tweetsLDA.==4)
+#head(tweetsLDA.class)
+tweets.final <- inner_join(tweetsLDA.class, clean_data)
+
+head(tweets.final)
+
+
+tweets.df <- as.vector(tweets.final$text)
+
+tweets.emotion <- get_nrc_sentiment(tweets.df)
+
+tweets.emotion <- cbind(tweets.final, tweets.emotion) 
+head(tweets.emotion)
+tweets.emotion <- tweets.emotion %>%
+    rename(date = created_at)
+
+view(tweets.emotion) %>%  select(date, text, anger, anticipation, disgust, fear, joy, sadness, surprise, trust, negative, positive)
+
+  
+
+#getting a sentiment score for each tweet
+tweets.score <- get_sentiment(tweets.df)
+tweets.score <- cbind(tweets.final,tweets.score )
+view(tweets.score)
+
+
+
+######## Connecting to Financial Data ########
+
+
+BTC_daily_prices <- crypto_history(
+  convert = "USD",
+  start_date = '20220910',
+  interval = "daily",
+  finalWait = TRUE,
+  limit =1
+)  %>%  select(time_open, close) %>% 
+  mutate(daily_change = (close - lag(close)) / close) %>% 
+  mutate( Date = time_open) %>% 
+  mutate( Date = as.Date(Date)) %>% 
+  select(Date, close, daily_change)
+  
+
+view(BTC_daily_prices)
+
+a <- BTC_daily_prices %>%  
+  mutate( Date = time_open) %>% 
+  mutate( Date = as.Date(Date))
+
+
+BTC_daily_prices <- BTC_daily_prices %>% 
+  mutate(daily_change = (close - lag(close)) / close ) %>% 
+  mutate( Date = as.Date(Date)) %>% 
+  rename(time_open = Date) 
+
+
+  
+
+head(BTC_daily_prices)
+
+
+plot_price <- ggplot(data=BTC_daily_prices, aes(x=as.character(BTC_daily_prices$Date), y=close)) + geom_line() + geom_point() 
+plot_price
+                   
+BTC_price <- plot_price + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,))            
+
+plot_price_change <- ggplot(data=BTC_daily_prices, aes(x=as.character(BTC_daily_prices$Date), y=daily_change)) +
+  geom_line() +
+  geom_point() 
+
+BTC_price_change <- plot_price_change + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,))            
+
+
+######## Sentiment Scores vs BTC Price Change ########
+
+head(tweets.score)
+
+colnames(tweets.score)[3]<-"Date"
+
+# Aggregate scores into single day.
+tweets.score.sum <- tweets.score %>% 
+  select(Date, tweets.score) %>% 
+  group_by(Date) %>%
+  summarise(scores=sum(tweets.score))
+
+head(tweets.score.sum)
+
+view(tweets.score.sum)
+
+# Update date column into date format.
+tweets.score.sum$Date <- anydate(tweets.score.sum$Date)
+
+# Merge stocks dataframe and scores dataframe.
+stocks.df.new <-  BTC_daily_prices %>% select(Date, daily_change)
+stocks.scores <- merge(stocks.df.new,tweets.score.sum, by='Date')
+
+head(stocks.scores)
+
+
+ggplot(stocks.scores, aes(Date)) + ggtitle("Stocks Price Change vs Sentiment Scores") + 
+  ylab("") +
+  geom_line(aes(y=daily_change, group=1, colour="Stock Price Change")) + 
+  geom_line(aes(y=scores/100, group=2, colour="Sentiment Scores")) + 
+  theme(plot.title = element_text(hjust=0.5), axis.title.x=element_blank(), axis.text.x=element_text(angle=90,hjust=1), legend.position=c(0.5,0.9),legend.title=element_blank())
+
+
+
+
+
+
+
